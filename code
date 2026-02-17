@@ -1,0 +1,188 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import csv
+import os
+
+# =========================
+# Output directory (Desktop)
+# =========================
+DESKTOP = os.path.join(os.path.expanduser("~"), "Desktop")
+OUTDIR = os.path.join(DESKTOP, "agency_results")
+os.makedirs(OUTDIR, exist_ok=True)
+
+# =========================
+# Parameters
+# =========================
+T = 5000
+tau_self = 4
+alpha = 0.2
+k = 1.0
+
+rho = 0.8
+sigma_e = 1.0
+sigma_xi = 0.5
+
+eta_L = 0.001
+eta_R = 0.001
+
+N_RUNS = 50
+
+# =========================
+# Simulation function
+# =========================
+def run_simulation(tau_world, motor_noise=0.0, seed=0):
+    rng = np.random.default_rng(seed)
+
+    m = rng.normal(0, 1, T)
+
+    e = np.zeros(T)
+    for t in range(1, T):
+        e[t] = rho * e[t - 1] + rng.normal(0, sigma_e)
+
+    xi = rng.normal(0, sigma_xi, T)
+    e_self = alpha * e
+
+    s_self = np.zeros(T)
+    for t in range(T):
+        if t - tau_world >= 0:
+            s_self[t] = k * m[t - tau_world] + e_self[t] + xi[t]
+        else:
+            s_self[t] = e_self[t] + xi[t]
+
+    w_L = 0.0
+    a_R = 0.0
+
+    A = np.zeros(T)
+
+    for t in range(T):
+        if t - tau_self >= 0:
+            m_tilde = m[t - tau_self] + rng.normal(0, motor_noise)
+            y_L = w_L * m_tilde
+        else:
+            y_L = 0.0
+
+        if t - 1 >= 0:
+            y_R = a_R * s_self[t - 1]
+        else:
+            y_R = 0.0
+
+        eps_L = s_self[t] - y_L
+        eps_R = s_self[t] - y_R
+
+        if t - tau_self >= 0:
+            w_L += eta_L * eps_L * m_tilde
+
+        if t - 1 >= 0:
+            a_R += eta_R * eps_R * s_self[t - 1]
+
+        A[t] = np.abs(eps_R) - np.abs(eps_L)
+
+    return A
+
+# =========================
+# Figure 2: Self vs External
+# =========================
+A_self = []
+A_ext = []
+
+for seed in range(N_RUNS):
+    A = run_simulation(tau_self, seed=seed)
+    mid = T // 2
+    A_self.append(np.mean(A[mid:]))
+    A_ext.append(np.mean(A[:mid]))
+
+A_self = np.array(A_self)
+A_ext = np.array(A_ext)
+
+# Save CSV
+with open(os.path.join(OUTDIR, "figure2_self_vs_external.csv"), "w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow(["Condition", "Mean", "SD"])
+    writer.writerow(["Self", np.mean(A_self), np.std(A_self, ddof=1)])
+    writer.writerow(["External", np.mean(A_ext), np.std(A_ext, ddof=1)])
+
+# Plot
+plt.figure()
+plt.bar(["Self", "External"],
+        [np.mean(A_self), np.mean(A_ext)],
+        yerr=[np.std(A_self, ddof=1), np.std(A_ext, ddof=1)],
+        capsize=5)
+plt.ylabel("Mean A(t)")
+plt.savefig(os.path.join(OUTDIR, "Figure2_self_vs_external.png"))
+plt.close()
+
+# =========================
+# Figure 3: Delay sweep
+# =========================
+taus = range(0, 10)
+A_mean = []
+A_sd = []
+
+for tau_world in taus:
+    vals = []
+    for seed in range(N_RUNS):
+        A = run_simulation(tau_world, seed=seed)
+        vals.append(np.mean(A[T // 2:]))
+    vals = np.array(vals)
+    A_mean.append(np.mean(vals))
+    A_sd.append(np.std(vals, ddof=1))
+
+A_mean = np.array(A_mean)
+A_sd = np.array(A_sd)
+
+# Critical delay
+tau_c = None
+for t, v in zip(taus, A_mean):
+    if v < 0:
+        tau_c = t
+        break
+
+# Save CSV
+with open(os.path.join(OUTDIR, "figure3_delay_sweep.csv"), "w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow(["tau_world", "Mean", "SD"])
+    for t, m, s in zip(taus, A_mean, A_sd):
+        writer.writerow([t, m, s])
+    writer.writerow(["tau_c", tau_c, ""])
+
+# Plot
+plt.figure()
+plt.errorbar(list(taus), A_mean, yerr=A_sd, fmt='o-', capsize=5)
+plt.axhline(0, linestyle="--")
+plt.xlabel("tau_world")
+plt.ylabel("Mean A(t)")
+plt.savefig(os.path.join(OUTDIR, "Figure3_delay_sweep.png"))
+plt.close()
+
+# =========================
+# Figure 4: Motor noise
+# =========================
+motor_noises = np.linspace(0, 2.0, 10)
+A_noise_mean = []
+A_noise_sd = []
+
+for mn in motor_noises:
+    vals = []
+    for seed in range(N_RUNS):
+        A = run_simulation(tau_self, motor_noise=mn, seed=seed)
+        vals.append(np.mean(A[T // 2:]))
+    vals = np.array(vals)
+    A_noise_mean.append(np.mean(vals))
+    A_noise_sd.append(np.std(vals, ddof=1))
+
+# Save CSV
+with open(os.path.join(OUTDIR, "figure4_motor_noise.csv"), "w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow(["sigma_m", "Mean", "SD"])
+    for mn, m, s in zip(motor_noises, A_noise_mean, A_noise_sd):
+        writer.writerow([mn, m, s])
+
+# Plot
+plt.figure()
+plt.errorbar(motor_noises, A_noise_mean, yerr=A_noise_sd, fmt='o-', capsize=5)
+plt.xlabel("Motor noise σ m")
+plt.ylabel("Mean A(t)")
+plt.savefig(os.path.join(OUTDIR, "Figure4_motor_noise.png"))
+plt.close()
+
+print("All results saved to:", OUTDIR)
